@@ -29,20 +29,18 @@ runs:
           echo '::info::return from `gh run view ...`'
           jq . $view_run_res
           # </debug>
-
           if [[ $(jq --raw-output '.conclusion' $view_run_res) == "" ]]; then
             # first, check if job has started yet...
             if $(jq --raw-output '.jobs[].name' $view_run_res | grep -q '^${{ inputs.JOB_NAME }} /'); then
-              job=$(jq --compact-output '.jobs[] | select(.name | startswith("${{ inputs.JOB_NAME }} "))' $view_run_res)
-              # assumption: only object returned from above
-              # then, see if job has concluded, or if it has a status of 'waiting' (see "note" below)
-              if [[ $(jq --raw-output '.conclusion' <<< $job) != '' ]] || \
-                  [[ $(jq --raw-output '.status' <<< $job) == 'waiting' ]]; then
-                echo '::info::job has concluded, or its concurrency key is available for queueing'
-                break
-              else
+              # and if it has, see if all of its parts have completed (to point of being able to pop from head of queue)
+              jobs_being_waited_on=$(jq --compact-output \
+                  '[ .jobs[] | select(.name | startswith("${{ inputs.JOB_NAME }} ")) | select(.conclusion != "" or .status == "waiting" | not) ] | length' $view_run_res)
+              if [[ $jobs_being_waited_on > 0 ]]; then
                 echo '::info::job is still executing, and no space in concurrency queue; waiting...'
                 sleep 30
+              else
+                echo '::info::job has concluded, or its concurrency key is available for queueing'
+                break
               fi
             else
               echo '::info::job is not yet seen in watched run; waiting...'
