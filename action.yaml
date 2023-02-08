@@ -1,0 +1,74 @@
+name: concurrency-queue
+
+description: Holds the thread with sleeps until the watched job on the given workflow run has either completed or is no longer waiting for the concurrency lock
+
+inputs:
+  RUN_ID:
+    description: id for the run to be watching
+    type: string
+    required: true
+  JOB_NAME:
+    description: the job in the workflow to watch
+    type: string
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - id: loop
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      shell: bash
+      run: |
+        view_run_res=$(mktemp)
+        while : ; do
+          gh run view -R ${{ github.repository }} \
+              ${{ inputs.RUN_ID }} --json conclusion,jobs,number > $view_run_res
+
+          echo "::group::watching run #$(jq '.number' $view_run_res)"
+          if [[ $(jq --raw-output '.conclusion' $view_run_res) == "" ]]; then
+            # first, check if job has started yet...
+            if $(jq --raw-output '.jobs[].name' $view_run_res | grep -q '^${{ inputs.JOB_NAME }} /'); then
+              job=$(jq --compact-output '.jobs[] | select(.name | startswith("${{ inputs.JOB_NAME }} "))' $view_run_res)
+              # assumption: only object returned from above
+              # then, see if job has concluded, or if it has a status of 'waiting' (see "note" below)
+              if [[ $(jq --raw-output '.conclusion' <<< $job) != '' ]] || \
+                  [[ $(jq --raw-output '.status' <<< $job) == 'waiting' ]]; then
+                echo '::info::job has concluded, or its concurrency key is available for queueing'
+                break
+              else
+                echo '::info::job is still executing, and no space in concurrency queue; waiting...'
+                sleep 30
+              fi
+            else
+              echo '::info::job is not yet seen in watched run; waiting...'
+              sleep 30
+            fi
+          else
+            echo '::info::workflow has concluded'
+            break
+          fi
+        done
+        echo '::endgroup::'
+
+# note: assumptions on status based on the following breakdown
+#
+# only when concluded:
+# - completed
+# - cancelled
+# - failure
+# - neutral
+# - skipped
+# - stale (?)
+# - success
+# - timed_out (?)
+#
+# only when has not concluded:
+# - in_progress (happens when a workflow job (steps, too?) is executing)
+# - queued (happens when workflow (steps, too?) has been notified to start, but has not yet started
+# - waiting (happens when waiting for protected environment requirements to be satisfied)
+# - pending (happens when waiting for concurrency group key)
+#
+# (?) unknown:
+# - action_required, only when concluded? does this happen when a job or step cannot call reusable workflow or action?
+# - requested, only when has not concluded? cron related? (similar case to "queued" status?)
