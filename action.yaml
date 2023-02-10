@@ -21,56 +21,75 @@ runs:
       shell: bash
       run: |
         view_run_res=$(mktemp)
-        echo '::group::watching run (ID: ${{ inputs.RUN_ID }})'
+        echo '::group::beginning to watch run (ID: ${{ inputs.RUN_ID }})'
+        # TODO include a backoff
+        sleep_amount=3
         while : ; do
           gh run view -R ${{ github.repository }} \
               ${{ inputs.RUN_ID }} --json conclusion,jobs,number > $view_run_res
           # <debug>
-          echo '::info::return from `gh run view ...`'
+          echo '::group::output from viewing run'
+          echo "::info::current time $(date --iso-8601=seconds)"
           jq . $view_run_res
+          echo '::endgroup::'
           # </debug>
           if [[ $(jq --raw-output '.conclusion' $view_run_res) == "" ]]; then
-            # first, check if job has started yet...
-            if $(jq --raw-output '.jobs[].name' $view_run_res | grep -q '^${{ inputs.JOB_NAME }} /'); then
-              # and if it has, see if all of its parts have completed (to point of being able to pop from head of queue)
-              jobs_being_waited_on=$(jq --compact-output \
-                  '[ .jobs[] | select(.name | startswith("${{ inputs.JOB_NAME }} ")) | select(.conclusion != "" or .status == "waiting" | not) ] | length' $view_run_res)
-              if [[ $jobs_being_waited_on > 0 ]]; then
-                echo '::info::job is still executing, and no space in concurrency queue; waiting...'
-                sleep 30
+            # first, get job of interest (or its constituent subjobs, format: <job-name> / <subjob-name>)...
+            jobs=$(jq --compact-output '.jobs | map(select(.name |
+                . == "${{ inputs.JOB_NAME }}" or startswith("${{ inputs.JOB_NAME }} ")))' $view_run_res)
+            # ... and check if it has started yet.
+            if [[ $(jq 'length' <<< $jobs) > 0 ]]; then
+              # job(s) exist, so watch them...
+              # ... first to see if there has been any reason for this workflow run to fail...
+              failed_or_cancelled_jobs=$(jq 'map(select(
+                  .conclusion == "cancelled" or .conclusion == "failure")) | length' <<< $jobs)
+              if [[ $failed_or_cancelled_jobs > 0 ]]; then
+                echo '::warning::job of interest (or its subjobs) had either failed or cancelled;
+                    cancelling this job...'
+                gh run cancel -R ${{ github.repository }} ${{ github.run_id }}
+                break
+              fi
+              # ... and second to see if this workflow can dequeue itself
+              jobs_to_wait_for=$(jq 'map(select(
+                  .conclusion != "" or .status == "waiting" | not)) | length' <<< $jobs)
+              if [[ $jobs_to_wait_for > 0 ]]; then
+                echo "::info::job of interest has $jobs_to_wait_for before this run can progress \
+                    without dropping a pending workflow; waiting for ${sleep_amount}s..."
+                sleep $sleep_amount
               else
-                echo '::info::job has concluded, or its concurrency key is available for queueing'
+                echo '::info::job of interest is ready for this run to progress'
                 break
               fi
             else
-              echo '::info::job is not yet seen in watched run; waiting...'
-              sleep 30
+              echo "::info::job of interest has not yet started; waiting for ${sleep_amount}s..."
+              sleep $sleep_amount
             fi
           else
-            echo '::info::workflow has concluded'
+            echo '::info::workflow containing job of interest has concluded'
             break
           fi
         done
         echo '::endgroup::'
 
-# note: assumptions on status based on the following breakdown
+# the following assumptions were made regarding interpreting values for "status":
 #
-# only when concluded:
+# only when .conclusion != "" (concluded):
 # - completed
 # - cancelled
 # - failure
 # - neutral
 # - skipped
-# - stale (?)
+# - (maybe?) stale
 # - success
-# - timed_out (?)
+# - (maybe?) timed_out
 #
-# only when has not concluded:
+# only when .conclusion == "" (not concluded):
 # - in_progress (happens when a workflow job (steps, too?) is executing)
 # - queued (happens when workflow (steps, too?) has been notified to start, but has not yet started
 # - waiting (happens when waiting for protected environment requirements to be satisfied)
 # - pending (happens when waiting for concurrency group key)
 #
-# (?) unknown:
+# note exactly sure...:
 # - action_required, only when concluded? does this happen when a job or step cannot call reusable workflow or action?
 # - requested, only when has not concluded? cron related? (similar case to "queued" status?)
+#
