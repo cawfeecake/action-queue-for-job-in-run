@@ -23,7 +23,7 @@ runs:
         view_run_res=$(mktemp)
         echo '::group::beginning to watch run (ID: ${{ inputs.RUN_ID }})'
         # TODO include a backoff
-        sleep_amount=3
+        sleep_amount=15
         while : ; do
           gh run view -R ${{ github.repository }} \
               ${{ inputs.RUN_ID }} --json conclusion,jobs,number > $view_run_res
