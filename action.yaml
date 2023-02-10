@@ -21,19 +21,19 @@ runs:
       shell: bash
       run: |
         view_run_res=$(mktemp)
-        echo '::group::beginning to watch run (ID: ${{ inputs.RUN_ID }})'
+        echo '::info::beginning to watch run (ID: ${{ inputs.RUN_ID }})'
         # TODO include a backoff
         sleep_amount=15
         while : ; do
           gh run view -R ${{ github.repository }} \
               ${{ inputs.RUN_ID }} --json conclusion,jobs,number > $view_run_res
           # <debug>
-          echo '::group::output from viewing run'
-          echo "::info::current time $(date --iso-8601=seconds)"
+          echo "::group::output from viewing run @ $(date --iso-8601=seconds)"
           jq . $view_run_res
           echo '::endgroup::'
           # </debug>
-          if [[ $(jq --raw-output '.conclusion' $view_run_res) == "" ]]; then
+          workflow_conclusion=$(jq --raw-output '.conclusion' $view_run_res)
+          if [[ $workflow_conclusion == "" ]]; then
             # first, get job of interest (or its constituent subjobs, format: <job-name> / <subjob-name>)...
             jobs=$(jq --compact-output '.jobs | map(select(.name |
                 . == "${{ inputs.JOB_NAME }}" or startswith("${{ inputs.JOB_NAME }} ")))' $view_run_res)
@@ -44,8 +44,7 @@ runs:
               failed_or_cancelled_jobs=$(jq 'map(select(
                   .conclusion == "cancelled" or .conclusion == "failure")) | length' <<< $jobs)
               if [[ $failed_or_cancelled_jobs > 0 ]]; then
-                echo '::warning::job of interest (or its subjobs) had either failed or cancelled;
-                    cancelling this job...'
+                echo '::warning::job of interest (or its subjobs) had either failed or cancelled; cancelling this job...'
                 gh run cancel -R ${{ github.repository }} ${{ github.run_id }}
                 break
               fi
@@ -53,8 +52,7 @@ runs:
               jobs_to_wait_for=$(jq 'map(select(
                   .conclusion != "" or .status == "waiting" | not)) | length' <<< $jobs)
               if [[ $jobs_to_wait_for > 0 ]]; then
-                echo "::info::job of interest has $jobs_to_wait_for before this run can progress \
-                    without dropping a pending workflow; waiting for ${sleep_amount}s..."
+                echo "::info::job of interest has $jobs_to_wait_for before this run can progress without dropping a pending workflow; waiting for ${sleep_amount}s..."
                 sleep $sleep_amount
               else
                 echo '::info::job of interest is ready for this run to progress'
@@ -65,11 +63,16 @@ runs:
               sleep $sleep_amount
             fi
           else
-            echo '::info::workflow containing job of interest has concluded'
-            break
+            if [[ $workflow_conclusion == 'cancelled' ]] || [[ $workflow_conclusion == 'failure' ]]; then
+              echo '::warning::workflow containing job of interest concluded due to either error or cancellation; cancelling this job...'
+              gh run cancel -R ${{ github.repository }} ${{ github.run_id }}
+              break
+            else
+              echo '::info::workflow containing job of interest has concluded'
+              break
+            fi
           fi
         done
-        echo '::endgroup::'
 
 # the following assumptions were made regarding interpreting values for "status":
 #
