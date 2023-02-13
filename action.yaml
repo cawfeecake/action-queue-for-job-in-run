@@ -20,7 +20,7 @@ runs:
   using: composite
   steps:
     - id: get-prev-run
-      uses: ./.github/actions/get-previous-run
+      uses: ${{ github.action_path }}/.github/actions/get-previous-run
       with:
         RUN_NUMBER: ${{ github.run_number }} # always >= 1
         RUN_WORKFLOW_NAME: ${{ github.workflow }}
