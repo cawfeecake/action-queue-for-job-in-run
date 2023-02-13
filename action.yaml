@@ -37,6 +37,7 @@ runs:
         echo "::info::beginning to watch run (ID: $RUN_TO_WATCH)"
         # TODO implement a backoff; if set too low, can blow up your token's rate limits
         sleep_amount="$SLEEP_AMOUNT"
+        first_loop=true
         while : ; do
           gh run view -R ${{ github.repository }} \
               "$RUN_TO_WATCH" --json conclusion,jobs,number > $view_run_res
@@ -57,7 +58,7 @@ runs:
                   .conclusion == "cancelled" or .conclusion == "failure")) | length' <<< $jobs)
               if [[ $failed_or_cancelled_jobs > 0 ]]; then
                 echo '::warning::job being watched (or its subjobs) has either failed or been cancelled;' \
-                    ' cancelling this job...'
+                    'cancelling this job...'
                 echo 'cancel-run=true' | tee -a "$GITHUB_OUTPUT"
                 break # exit loop
               fi
@@ -67,7 +68,7 @@ runs:
                   .conclusion != "" or .status == "waiting" | not)) | length' <<< $jobs)
               if [[ $jobs_to_wait_for > 0 ]]; then
                 echo "::info::job being wtched has $jobs_to_wait_for (sub)jobs before this run can progress;" \
-                    " waiting for ${sleep_amount}s..."
+                    "waiting for ${sleep_amount}s..."
                 sleep $sleep_amount
               else
                 echo '::info::job being watched is in a state where this workflow run can progress'
@@ -78,15 +79,21 @@ runs:
               sleep $sleep_amount
             fi
           else
-            if [[ $watched_run == 'cancelled' ]] || [[ $watched_run == 'failure' ]]; then
-              echo '::warning::workflow containing job to watch has concluded due to either error ' \
-                  'or being cancelled; cancelling this job...'
-              echo 'cancel-run=true' | tee -a "$GITHUB_OUTPUT"
+            if $first_loop; then
+            echo '::info::no queueing to do as initial encounter with workflow containing job to watch' \
+               'shows that it has already concluded'
             else
-              echo '::info::workflow containing job to watch has concluded'
+              if [[ $watched_run == 'cancelled' ]] || [[ $watched_run == 'failure' ]]; then
+                echo '::warning::workflow containing job to watch has concluded due to either error' \
+                    'or being cancelled; cancelling this job...'
+                echo 'cancel-run=true' | tee -a "$GITHUB_OUTPUT"
+              else
+                echo '::info::workflow containing job to watch has concluded'
+              fi
             fi
             break # exit loop
           fi
+          first_loop=false
         done
 
 # the following assumptions were made regarding interpreting values for "status":
