@@ -1,76 +1,91 @@
-name: concurrency-queue
+name: queue-behind-previous-run
 
-description: Holds the thread with sleeps until the watched job on the given workflow run has either completed or is no longer waiting for the concurrency lock
+description: >-
+  Will queue this workflow behind a the previously ran one if it is running, and wait until
+  the given job to watch is available for another job to progress to it without cancelling
+  any pending workflow runs.
 
 inputs:
-  RUN_ID:
-    description: id for the run to be watching
-    type: string
-    required: true
   JOB_NAME:
-    description: the job in the workflow to watch
+    description: the job in the workflow to watch to determine if still in queue
     type: string
     required: true
+  SECONDS_BETWEEN_WATCHES:
+    description: how long to sleep before observing the state of the run that's being watched
+    type: string
+    required: true
+    default: 15
 
 runs:
   using: composite
   steps:
-    - id: loop
+    - id: get-prev-run
+      uses: ./.github/actions/get-previous-run
+      with:
+        RUN_NUMBER: ${{ github.run_number }} # always >= 1
+        RUN_WORKFLOW_NAME: ${{ github.workflow }}
+
+    - id: watch-loop
       env:
+        RUN_TO_WATCH: ${{ steps.get-prev-run.outputs.id }}
+        JOB_TO_WATCH: ${{ inputs.JOB_NAME }}
+        SLEEP_AMOUNT: ${{ inputs.SECONDS_BETWEEN_WATCHES }}
         GITHUB_TOKEN: ${{ github.token }}
       shell: bash
       run: |
         view_run_res=$(mktemp)
-        echo '::info::beginning to watch run (ID: ${{ inputs.RUN_ID }})'
-        # TODO include a backoff
-        sleep_amount=15
+        echo "::info::beginning to watch run (ID: $RUN_TO_WATCH)"
+        # TODO implement a backoff; if set too low, can blow up your token's rate limits
+        sleep_amount="$SLEEP_AMOUNT"
         while : ; do
           gh run view -R ${{ github.repository }} \
-              ${{ inputs.RUN_ID }} --json conclusion,jobs,number > $view_run_res
+              "$RUN_TO_WATCH" --json conclusion,jobs,number > $view_run_res
           # <debug>
-          echo "::group::output from viewing run @ $(date --iso-8601=seconds)"
+          echo "::group::[debug] JSON output from \`gh run view ...\` at $(date --iso-8601=seconds)"
           jq . $view_run_res
           echo '::endgroup::'
           # </debug>
-          workflow_conclusion=$(jq --raw-output '.conclusion' $view_run_res)
-          if [[ $workflow_conclusion == "" ]]; then
-            # first, get job of interest (or its constituent subjobs, format: <job-name> / <subjob-name>)...
-            jobs=$(jq --compact-output '.jobs | map(select(.name |
-                . == "${{ inputs.JOB_NAME }}" or startswith("${{ inputs.JOB_NAME }} ")))' $view_run_res)
-            # ... and check if it has started yet.
+          watched_run=$(jq --raw-output '.conclusion' $view_run_res)
+          if [[ $watched_run == "" ]]; then
+            # first, try to see if the job being queued for has started, and what its current state is...
+            jobs=$(jq --compact-output --arg jn "$JOB_TO_WATCH" '.jobs | map(select(.name |
+                . == $jn or startswith($jn + " ")))' $view_run_res)
+            # jobs that are made up of multiple subjobs will be named in the format <job-name> / <subjob-name>
             if [[ $(jq 'length' <<< $jobs) > 0 ]]; then
-              # job(s) exist, so watch them...
-              # ... first to see if there has been any reason for this workflow run to fail...
+              # ... the job has started, so first see if it has finished unsuccessfully...
               failed_or_cancelled_jobs=$(jq 'map(select(
                   .conclusion == "cancelled" or .conclusion == "failure")) | length' <<< $jobs)
               if [[ $failed_or_cancelled_jobs > 0 ]]; then
-                echo '::warning::job of interest (or its subjobs) had either failed or cancelled; cancelling this job...'
-                gh run cancel -R ${{ github.repository }} ${{ github.run_id }}
-                break
+                echo '::warning::job being watched (or its subjobs) has either failed or been cancelled;' \
+                    ' cancelling this job...'
+                echo 'cancel-run=true' | tee -a "$GITHUB_OUTPUT"
+                break # exit loop
               fi
-              # ... and second to see if this workflow can dequeue itself
+              # ... and then see if it's in a state that will allow this workflow to progress without
+              # dequeuing a different pending workflow
               jobs_to_wait_for=$(jq 'map(select(
                   .conclusion != "" or .status == "waiting" | not)) | length' <<< $jobs)
               if [[ $jobs_to_wait_for > 0 ]]; then
-                echo "::info::job of interest has $jobs_to_wait_for before this run can progress without dropping a pending workflow; waiting for ${sleep_amount}s..."
+                echo "::info::job being wtched has $jobs_to_wait_for (sub)jobs before this run can progress;" \
+                    " waiting for ${sleep_amount}s..."
                 sleep $sleep_amount
               else
-                echo '::info::job of interest is ready for this run to progress'
-                break
+                echo '::info::job being watched is in a state where this workflow run can progress'
+                break # exit loop
               fi
             else
-              echo "::info::job of interest has not yet started; waiting for ${sleep_amount}s..."
+              echo "::info::job to watch has not yet started; waiting for ${sleep_amount}s..."
               sleep $sleep_amount
             fi
           else
-            if [[ $workflow_conclusion == 'cancelled' ]] || [[ $workflow_conclusion == 'failure' ]]; then
-              echo '::warning::workflow containing job of interest concluded due to either error or cancellation; cancelling this job...'
-              gh run cancel -R ${{ github.repository }} ${{ github.run_id }}
-              break
+            if [[ $watched_run == 'cancelled' ]] || [[ $watched_run == 'failure' ]]; then
+              echo '::warning::workflow containing job to watch has concluded due to either error ' \
+                  'or being cancelled; cancelling this job...'
+              echo 'cancel-run=true' | tee -a "$GITHUB_OUTPUT"
             else
-              echo '::info::workflow containing job of interest has concluded'
-              break
+              echo '::info::workflow containing job to watch has concluded'
             fi
+            break # exit loop
           fi
         done
 
@@ -95,4 +110,13 @@ runs:
 # note exactly sure...:
 # - action_required, only when concluded? does this happen when a job or step cannot call reusable workflow or action?
 # - requested, only when has not concluded? cron related? (similar case to "queued" status?)
-#
+
+    - name: Cancel current workflow
+      if: steps.watch-loop.outputs.cancel-run == 'true'
+      env:
+        SLEEP_AMOUNT: ${{ inputs.SECONDS_BETWEEN_WATCHES }}
+        GITHUB_TOKEN: ${{ github.token }}
+      shell: bash
+      run: |
+        gh run cancel -R ${{ github.repository }} ${{ github.run_id }}
+        sleep "$SLEEP_AMOUNT"
