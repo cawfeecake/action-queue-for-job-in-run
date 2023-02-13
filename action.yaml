@@ -22,8 +22,8 @@ runs:
     - id: get-prev-run
       uses: cawfeecake/actions-concurrency-queue/get-previous-run@main
       with:
-        RUN_NUMBER: ${{ github.run_number }} # always >= 1
-        RUN_WORKFLOW_NAME: ${{ github.workflow }}
+        WORKFLOW_RUN_NUMBER: ${{ github.run_number }} # always >= 1
+        WORKFLOW_NAME: ${{ github.workflow }}
 
     - id: watch-loop
       env:
