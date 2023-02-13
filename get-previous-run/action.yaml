@@ -4,7 +4,7 @@ description: Given a workflow name and number will return the most recent workfl
 
 inputs:
   WORKFLOW_NAME:
-    description: name of the workflow of interest (typically ${{ '$' }}{{ github.workflow }})
+    description: name of the workflow of interest (typically `github.workflow`)
     type: string
     required: true
   WORKFLOW_RUN_NUMBER:
