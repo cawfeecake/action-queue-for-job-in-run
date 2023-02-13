@@ -114,9 +114,8 @@ runs:
     - name: Cancel current workflow
       if: steps.watch-loop.outputs.cancel-run == 'true'
       env:
-        SLEEP_AMOUNT: ${{ inputs.SECONDS_BETWEEN_WATCHES }}
         GITHUB_TOKEN: ${{ github.token }}
       shell: bash
       run: |
         gh run cancel -R ${{ github.repository }} ${{ github.run_id }}
-        sleep "$SLEEP_AMOUNT"
+        echo '::info::successfully cancelled this workflow run'
