@@ -2,7 +2,7 @@
 
 # required env vars to have set:
 #  * WORKFLOW_NAME
-#  * RUN_NUMBER: expected to be > 0
+#  * RUN_NUMBER: expected to be >= 1
 #  * GITHUB_REPO
 #  * GITHUB_TOKEN: used by `gh`
 
