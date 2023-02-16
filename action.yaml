@@ -19,6 +19,17 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Some debugging statements...
+      id: debug
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        echo "::info::github.action_path == \"$ACTION_PATH\""
+        echo "::group::list of all of \"$ACTION_PATH\""
+        ls -aR "$ACTION_PATH"
+        echo '::endgroup::'
+
     - id: get-prev-run
       uses: cawfeecake/actions-concurrency-queue/get-previous-run@main
       with:
