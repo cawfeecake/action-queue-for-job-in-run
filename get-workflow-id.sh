@@ -2,7 +2,7 @@
 
 # required env vars to have set:
 #  * WORKFLOW_NAME
-#  * RUN_NUMBER: expected to be >= 1
+#  * WORKFLOW_RUN_NUMBER: expected to be >= 1
 #  * GITHUB_REPO
 #  * GITHUB_TOKEN: used by `gh`
 
@@ -17,12 +17,12 @@ jq --compact-output . $twenty_most_recent_runs
 echo '::endgroup::'
 # </debug>
 
-run_wrapped_in_array=$(jq --argjson run_number "$RUN_NUMBER" \
+run_wrapped_in_array=$(jq --argjson run_number "$WORKFLOW_RUN_NUMBER" \
     'map(select(.number == $run_number))' $twenty_most_recent_runs)
 if [[ $(jq 'length' <<< $run_wrapped_in_array) < 1 ]]; then
   # TODO error if was supposed to exist in latest 20
   # TODO search back further if it wasn't expected to exist in latest 20
-  echo "::error::unable to find workflow run #$RUN_NUMBER in latest 20 runs"
+  echo "::error::unable to find workflow run #$WORKFLOW_RUN_NUMBER in latest 20 runs"
   exit 1
 fi
 
@@ -31,7 +31,7 @@ fi
 run=$(jq 'first' <<< $run_wrapped_in_array)
 
 # <debug>
-echo "::group::workflow run #$RUN_NUMBER"
+echo "::group::workflow run #$WORKFLOW_RUN_NUMBER"
 jq . <<< $run
 echo '::endgroup::'
 # <debug>
