@@ -63,7 +63,7 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
       # unrelated note: can only use {org}/{repo}[/path]@ref format when calling custom actions
       #  e.g. "uses: cawfeecake/actions-concurrency-queue/get-previous-run@main"
-      run: ${{ github.action_path }}/find-workflow-run.sh
+      run: ${{ github.action_path }}/get-workflow-id.sh
       # has to output "id"
 
     - id: watch-loop
