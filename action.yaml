@@ -30,6 +30,11 @@ runs:
         ls -aR "$ACTION_PATH"
         echo '::endgroup::'
 
+    - uses: ${{ github.action_path }}/get-previous-run
+      with:
+        WORKFLOW_RUN_NUMBER: ${{ github.run_number }} # always >= 1
+        WORKFLOW_NAME: ${{ github.workflow }}
+
     - id: get-prev-run
       uses: cawfeecake/actions-concurrency-queue/get-previous-run@main
       with:
