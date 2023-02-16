@@ -1,53 +1,78 @@
-name: queue-behind-previous-run
+name: queue-for-job-in-run
 
 description: >-
-  Will queue this workflow behind a the previously ran one if it is running, and wait until
-  the given job to watch is available for another job to progress to it without cancelling
-  any pending workflow runs.
+  Queues behind the given job in the given workflow run.
+  If the workflow run given is "prev", the action will first try to find the (n - 1) run
+  from the workflow running this action.
+  The queued workflow running this action will be determined to no longer be queued if the watched job in
+  the given workflow run can accept another job using the same concurrency group (i.e. when advancing this
+  workflow won't cancel a pending run) along with executing jobs in numerical order.
 
 inputs:
-  JOB_NAME:
-    description: the job in the workflow to watch to determine if still in queue
+  WORKFLOW_JOB_NAME:
+    description: the name of the job that is looked for in the workflow when determining whether to be queued
     type: string
     required: true
-  SECONDS_BETWEEN_WATCHES:
-    description: how long to sleep before observing the state of the run that's being watched
+  WORKFLOW_RUN_ID:
+    description: >-
+      the ID of the run to queue behind. a special and default input of "prev" will have this
+      action try to find the workflow run that preceeds this one.
+    type: string
+    required: true
+    default: prev
+  SECONDS_BETWEEN_GITHUB_REQUESTS:
+    description: amount of time in seconds that will pass in between requests to GitHub
     type: string
     required: true
     default: 15
 
+outputs:
+  run-id:
+    description: the ID of the run that was queued behind (or at least attempted to be)
+    value: ${{ steps.get-prev-run.outputs.id || inputs.WORKFLOW_RUN_ID }}
+
 runs:
   using: composite
   steps:
-    - name: Some debugging statements...
-      id: debug
+    - name: Determine if first run of workflow
+      if: inputs.WORKFLOW_RUN_ID == 'prev'
       shell: bash
       env:
-        ACTION_PATH: ${{ github.action_path }}
+        THIS_RUN_NUMBER: ${{ github.run_number }} # always >= 1
       run: |
-        echo "::info::github.action_path == \"$ACTION_PATH\""
-        echo "::group::list of all of \"$ACTION_PATH\""
-        ls -aR "$ACTION_PATH"
-        echo '::endgroup::'
+        if [[ $THIS_RUN_NUMBER == 1 ]]; then
+          echo '::debug::first run of workflow; therefore, no need to queue'
+          exit 0
+        fi
 
-    - uses: ${{ github.action_path }}/get-previous-run
-      with:
-        WORKFLOW_RUN_NUMBER: ${{ github.run_number }} # always >= 1
-        WORKFLOW_NAME: ${{ github.workflow }}
+    - id: calculate-prev-run-number
+      if: inputs.WORKFLOW_RUN_ID == 'prev'
+      shell: bash
+      env:
+        THIS_RUN_NUMBER: ${{ github.run_number }} # always > 1
+      run: |
+        echo "n=$(( $THIS_RUN_NUMBER - 1 ))" | tee -a $GITHUB_OUTPUT
 
     - id: get-prev-run
-      uses: cawfeecake/actions-concurrency-queue/get-previous-run@main
-      with:
-        WORKFLOW_RUN_NUMBER: ${{ github.run_number }} # always >= 1
+      if: inputs.WORKFLOW_RUN_ID == 'prev'
+      shell: bash
+      env:
         WORKFLOW_NAME: ${{ github.workflow }}
+        WORKFLOW_RUN_NUMBER: ${{ steps.calculate-prev-run-number.outputs.n }}
+        GITHUB_REPO: ${{ github.repository }}
+        GITHUB_TOKEN: ${{ github.token }}
+      # unrelated note: can only use {org}/{repo}[/path]@ref format when calling custom actions
+      #  e.g. "uses: cawfeecake/actions-concurrency-queue/get-previous-run@main"
+      run: ${{ github.action_path }}/find-workflow-run.sh
+      # has to output "id"
 
     - id: watch-loop
-      env:
-        RUN_TO_WATCH: ${{ steps.get-prev-run.outputs.id }}
-        JOB_TO_WATCH: ${{ inputs.JOB_NAME }}
-        SLEEP_AMOUNT: ${{ inputs.SECONDS_BETWEEN_WATCHES }}
-        GITHUB_TOKEN: ${{ github.token }}
       shell: bash
+      env:
+        JOB_TO_WATCH: ${{ inputs.WORKFLOW_JOB_NAME }}
+        RUN_TO_WATCH: ${{ steps.get-prev-run.outputs.id || inputs.WORKFLOW_RUN_ID }}
+        SLEEP_AMOUNT: ${{ inputs.SECONDS_BETWEEN_GITHUB_REQUESTS }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         view_run_res=$(mktemp)
         echo "::info::beginning to watch run (ID: $RUN_TO_WATCH)"
@@ -58,7 +83,8 @@ runs:
           gh run view -R ${{ github.repository }} \
               "$RUN_TO_WATCH" --json conclusion,jobs,number > $view_run_res
           # <debug>
-          echo "::group::[debug] JSON output from \`gh run view ...\` at $(date --iso-8601=seconds)"
+          echo '[debug]'
+          echo "::group::JSON output from \`gh run view ...\` at $(date --iso-8601=seconds)"
           jq . $view_run_res
           echo '::endgroup::'
           # </debug>
@@ -75,7 +101,7 @@ runs:
               if [[ $failed_or_cancelled_jobs > 0 ]]; then
                 echo '::warning::job being watched (or its subjobs) has either failed or been cancelled;' \
                     'cancelling this job...'
-                echo 'cancel-run=true' | tee -a "$GITHUB_OUTPUT"
+                echo 'cancel-this-run=true' | tee -a $GITHUB_OUTPUT
                 break # exit loop
               fi
               # ... and then see if it's in a state that will allow this workflow to progress without
@@ -83,7 +109,7 @@ runs:
               jobs_to_wait_for=$(jq 'map(select(
                   .conclusion != "" or .status == "waiting" | not)) | length' <<< $jobs)
               if [[ $jobs_to_wait_for > 0 ]]; then
-                echo "::info::job being wtched has $jobs_to_wait_for (sub)jobs before this run can progress;" \
+                echo "::info::job being watched has $jobs_to_wait_for (sub)jobs before this run can progress;" \
                     "waiting for ${sleep_amount}s..."
                 sleep $sleep_amount
               else
@@ -102,7 +128,7 @@ runs:
               if [[ $watched_run == 'cancelled' ]] || [[ $watched_run == 'failure' ]]; then
                 echo '::warning::workflow containing job to watch has concluded due to either error' \
                     'or being cancelled; cancelling this job...'
-                echo 'cancel-run=true' | tee -a "$GITHUB_OUTPUT"
+                echo 'cancel-this-run=true' | tee -a $GITHUB_OUTPUT
               else
                 echo '::info::workflow containing job to watch has concluded'
               fi
@@ -134,11 +160,11 @@ runs:
 # - action_required, only when concluded? does this happen when a job or step cannot call reusable workflow or action?
 # - requested, only when has not concluded? cron related? (similar case to "queued" status?)
 
-    - name: Cancel current workflow
-      if: steps.watch-loop.outputs.cancel-run == 'true'
+    - name: Cancel this workflow run
+      if: steps.watch-loop.outputs.cancel-this-run == 'true'
+      shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
-      shell: bash
       run: |
         gh run cancel -R ${{ github.repository }} ${{ github.run_id }}
         echo '::info::successfully cancelled this workflow run'
